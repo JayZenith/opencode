@@ -5,7 +5,6 @@ import { pathToFileURL, fileURLToPath } from "url"
 import { createMessageConnection, StreamMessageReader, StreamMessageWriter } from "vscode-jsonrpc/node"
 import type { Diagnostic as VSCodeDiagnostic } from "vscode-languageserver-types"
 import { Log } from "../util/log"
-import { LANGUAGE_EXTENSIONS } from "./language"
 import z from "zod"
 import type { LSPServer } from "./server"
 import { NamedError } from "@opencode-ai/util/error"
@@ -132,10 +131,6 @@ export namespace LSPClient {
       })
     }
 
-    const files: {
-      [path: string]: number
-    } = {}
-
     const result = {
       root: input.root,
       get serverID() {
@@ -147,60 +142,19 @@ export namespace LSPClient {
       notify: {
         async open(input: { path: string }) {
           input.path = path.isAbsolute(input.path) ? input.path : path.resolve(Instance.directory, input.path)
-          const text = await Filesystem.readText(input.path)
-          const extension = path.extname(input.path)
-          const languageId = LANGUAGE_EXTENSIONS[extension] ?? "plaintext"
-
-          const version = files[input.path]
-          if (version !== undefined) {
-            log.info("workspace/didChangeWatchedFiles", input)
-            await connection.sendNotification("workspace/didChangeWatchedFiles", {
-              changes: [
-                {
-                  uri: pathToFileURL(input.path).href,
-                  type: 2, // Changed
-                },
-              ],
-            })
-
-            const next = version + 1
-            files[input.path] = next
-            log.info("textDocument/didChange", {
-              path: input.path,
-              version: next,
-            })
-            await connection.sendNotification("textDocument/didChange", {
-              textDocument: {
-                uri: pathToFileURL(input.path).href,
-                version: next,
-              },
-              contentChanges: [{ text }],
-            })
-            return
-          }
-
+          // Notify pyright the file changed on disk. pyright reads the file
+          // directly via its own file system calls — no content goes through
+          // the pipe, so the pipe buffer cannot fill and deadlock.
           log.info("workspace/didChangeWatchedFiles", input)
+          diagnostics.delete(input.path)
           await connection.sendNotification("workspace/didChangeWatchedFiles", {
             changes: [
               {
                 uri: pathToFileURL(input.path).href,
-                type: 1, // Created
+                type: 2, // Changed
               },
             ],
           })
-
-          log.info("textDocument/didOpen", input)
-          diagnostics.delete(input.path)
-          await connection.sendNotification("textDocument/didOpen", {
-            textDocument: {
-              uri: pathToFileURL(input.path).href,
-              languageId,
-              version: 0,
-              text,
-            },
-          })
-          files[input.path] = 0
-          return
         },
       },
       get diagnostics() {
